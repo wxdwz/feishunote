@@ -1,0 +1,26 @@
+# VS Code 工程文件
+.vscode/**
+.vscode-test/**
+.github/**
+
+# 源码（vsix 只需要编译后的 out/）
+src/**
+**/*.ts
+**/*.ts.map
+**/*.js.map
+tsconfig.json
+.eslintrc.json
+
+# 文档与开发资料
+docs/**
+CONTRIBUTING.md
+
+# Git / CI / 编辑器残留
+.git
+.gitignore
+.gitattributes
+.claude/**
+.venv/**
+
+# 构建产物本身
+*.vsix
