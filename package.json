@@ -2,10 +2,10 @@
     "name": "feishunote",
     "displayName": "Feishu Note",
     "description": "在 VSCode 中浏览、新建、编辑飞书云文档，保存即同步 Markdown 格式",
-    "version": "0.0.2",
+    "version": "0.0.3",
     "license": "MIT",
-    "publisher": "wxdwz",
-    "author": "wxdwz",
+    "publisher": "zhonggc",
+    "author": "zhonggc",
     "repository": {
         "type": "git",
         "url": "https://github.com/wxdwz/feishunote.git"
