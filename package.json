@@ -1,0 +1,115 @@
+{
+    "name": "feishunote",
+    "displayName": "Feishu Note",
+    "description": "在 VSCode 中浏览、新建、编辑飞书云文档，保存即同步 Markdown 格式",
+    "version": "0.0.1",
+    "license": "MIT",
+    "publisher": "feishunote",
+    "author": "wxdwz",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/wxdwz/feishunote.git"
+    },
+    "homepage": "https://github.com/wxdwz/feishunote#readme",
+    "bugs": {
+        "url": "https://github.com/wxdwz/feishunote/issues"
+    },
+    "engines": {
+        "vscode": "^1.80.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [
+        "onStartupFinished"
+    ],
+    "main": "./out/extension.js",
+    "contributes": {
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "feishunote",
+                    "title": "FS Note",
+                    "icon": "resources/icon.svg"
+                }
+            ]
+        },
+        "views": {
+            "feishunote": [
+                {
+                    "icon": "",
+                    "type": "webview",
+                    "id": "feishunote.docPreview",
+                    "name": " "
+                }
+            ]
+        },
+        "configuration": {
+            "title": "Feishu Note",
+            "properties": {
+                "feishunote.appId": {
+                    "type": "string",
+                    "default": "",
+                    "description": "飞书应用 App ID（在飞书开放平台的「凭证与基础信息」页面获取）"
+                },
+                "feishunote.appSecret": {
+                    "type": "string",
+                    "default": "",
+                    "description": "飞书应用 App Secret（同上）",
+                    "editPresentation": "password"
+                },
+                "feishunote.oauthCallbackPort": {
+                    "type": "number",
+                    "default": 8080,
+                    "description": "飞书 OAuth 回调端口号"
+                },
+                "feishunote.oauthCallbackHost": {
+                    "type": "string",
+                    "default": "127.0.0.1",
+                    "description": "飞书 OAuth 回调地址的主机名 (localhost 或 127.0.0.1)"
+                },
+                "feishunote.apiBaseUrl": {
+                    "type": "string",
+                    "default": "https://open.feishu.cn",
+                    "description": "飞书 API 基础地址"
+                },
+                "feishunote.documentLanguage": {
+                    "type": "string",
+                    "default": "zh",
+                    "description": "文档内容语言",
+                    "enum": ["zh", "en", "ja"]
+                },
+                "feishunote.documentContentType": {
+                    "type": "string",
+                    "default": "markdown",
+                    "description": "文档内容格式",
+                    "enum": ["markdown", "html"]
+                }
+            }
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "compile": "node ./node_modules/typescript/lib/_tsc.js -p ./",
+        "watch": "node ./node_modules/typescript/lib/_tsc.js -watch -p ./",
+        "pretest": "npm run compile && npm run lint",
+        "lint": "eslint src --ext ts",
+        "test": "node ./out/test/runTest.js",
+        "package": "npx --yes @vscode/vsce package"
+    },
+    "devDependencies": {
+        "@types/mocha": "^10.0.1",
+        "@types/node": "^20.4.2",
+        "@types/vscode": "^1.80.0",
+        "@typescript-eslint/eslint-plugin": "^6.1.0",
+        "@typescript-eslint/parser": "^6.1.0",
+        "@vscode/test-electron": "^2.3.3",
+        "eslint": "^8.45.0",
+        "mocha": "^10.2.0",
+        "typescript": "^5.1.6"
+    },
+    "dependencies": {
+        "marked": "^11.1.1",
+        "axios": "^1.5.0"
+    }
+}
