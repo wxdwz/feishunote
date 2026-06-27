@@ -87,28 +87,6 @@ Markdown ↔ 飞书块的双向映射，覆盖以下结构（实现位于 `src/a
 
 不支持或暂未实现的元素会以最接近的纯文本回退。
 
-## 项目结构
-
-```
-.
-├── src/
-│   ├── extension.ts          扩展入口与命令派发
-│   ├── auth/
-│   │   ├── oauth.ts          OAuth2 流程，本地回调服务器
-│   │   └── tokenManager.ts   Token 持久化（SecretStorage）
-│   ├── api/
-│   │   └── feishuApi.ts      飞书 API 调用 + Markdown ↔ Blocks 转换
-│   ├── view/
-│   │   └── docPreview.ts     侧边栏 Webview
-│   ├── utils/
-│   └── test/                 mocha 测试
-├── resources/
-│   └── webview.js            Webview 前端脚本
-├── docs/                     飞书 Open API 参考资料（开发用）
-├── package.json
-└── tsconfig.json
-```
-
 ## 开发
 
 ```bash
