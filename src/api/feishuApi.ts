@@ -623,7 +623,18 @@ export class FeishuApi {
     }
 
     /**
-     * 将 Markdown 转换为飞书文档块结构
+     * 为本次同步生成一个临时 block_id（仅在 descendant API 请求内引用，飞书会返回真实 id）。
+     */
+    private nextTempBlockId(prefix: string = 'b'): string {
+        return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 8)}`;
+    }
+
+    /**
+     * 将 Markdown 转换为飞书文档块结构。
+     *
+     * 注意：飞书 /children 接口的 children 字段不接受嵌套完整 block 对象（表格→单元格→文本块），
+     * 所以这里返回的是**扁平**的 block 数组——容器块（表格、单元格）的 `children` 字段只放子块的 block_id，
+     * 子块自身作为独立 entry 出现在数组里。最终由 /descendant 接口一次性写入。
      */
     private markdownToBlocks(markdown: string): Array<any> {
         const lines = markdown.split('\n');
@@ -701,6 +712,43 @@ export class FeishuApi {
                     }
                 });
                 i++;
+                continue;
+            }
+
+            // 表格 (| col1 | col2 | ...)
+            if (line.startsWith('|') && line.endsWith('|') && line.indexOf('|', 1) > 1) {
+                // 收集所有连续表格行
+                const tableRows: string[] = [];
+                while (i < lines.length) {
+                    const rowLine = lines[i];
+                    if (
+                        !rowLine.startsWith('|') ||
+                        !rowLine.endsWith('|') ||
+                        rowLine.indexOf('|', 1) <= 1
+                    ) {
+                        break;
+                    }
+                    tableRows.push(rowLine);
+                    i++;
+                }
+
+                if (tableRows.length >= 2) {
+                    const tableBlocks = this.parseTableMarkdown(tableRows);
+                    blocks.push(...tableBlocks);
+                    continue;
+                }
+
+                // 如果少于两行或格式不对，回退为普通文本
+                for (const rowLine of tableRows) {
+                    const el = this.parseInlineStyles(rowLine);
+                    blocks.push({
+                        block_type: 2,
+                        text: {
+                            style: { align: 1, folded: false },
+                            elements: el
+                        }
+                    });
+                }
                 continue;
             }
 
@@ -997,6 +1045,202 @@ export class FeishuApi {
     }
 
     /**
+     * 将 Markdown 表格语法解析为飞书表格块（block_type=31）及单元格块（block_type=32）。
+     *
+     * 输入示例：
+     *   | 姓名 | 年龄 |
+     *   | --- | --- |
+     *   | 张三 | 25 |
+     *
+     * 飞书表格结构：
+     *   block_type=31（表格容器），children=[cell1, cell2, ...]
+     *   每个 cell: block_type=32（单元格），children=[textBlock, ...]
+     */
+    private parseTableMarkdown(tableRows: string[]): any[] {
+        // 找出分隔行（|---|...|）位置
+        let separatorIndex = -1;
+        for (let r = 0; r < tableRows.length; r++) {
+            const trimmed = tableRows[r].trim();
+            if (/^\|[\s\-:|]+\|$/.test(trimmed) && /-/.test(trimmed)) {
+                separatorIndex = r;
+                break;
+            }
+        }
+
+        // 按 GFM 习惯：分隔行之前为表头，之后为数据行
+        let headerRow = '';
+        const dataRows: string[] = [];
+        if (separatorIndex > 0) {
+            headerRow = tableRows[0];
+            for (let r = separatorIndex + 1; r < tableRows.length; r++) {
+                const row = tableRows[r].trim();
+                if (!row || /^\|[\s\-:|]+\|$/.test(row)) { continue; }
+                dataRows.push(row);
+            }
+        } else {
+            // 无分隔行或分隔行在首行——退化处理：第一行作表头，其余作数据
+            headerRow = tableRows[0];
+            for (let r = 1; r < tableRows.length; r++) {
+                const row = tableRows[r].trim();
+                if (!row || /^\|[\s\-:|]+\|$/.test(row)) { continue; }
+                dataRows.push(row);
+            }
+        }
+
+        // 从第一行计算列数
+        const colCount = this.countTableColumns(headerRow || dataRows[0] || '');
+        if (colCount < 1) { return this.fallbackTableAsText(tableRows); }
+
+        // 构造扁平 block 列表：表格容器 + 单元格 + 文本块（都作为独立 entry）
+        const out: any[] = [];
+        const cellIds: string[] = [];
+        const allRows: string[] = [];
+        if (headerRow) { allRows.push(headerRow); }
+        allRows.push(...dataRows);
+
+        if (allRows.length === 0) { return this.fallbackTableAsText(tableRows); }
+
+        const tableId = this.nextTempBlockId('table');
+
+        for (const row of allRows) {
+            const cells = this.splitTableRow(row, colCount);
+            for (const cellText of cells) {
+                const cellId = this.nextTempBlockId('cell');
+                const textId = this.nextTempBlockId('txt');
+
+                // 单元格内部文本块
+                out.push({
+                    block_id: textId,
+                    block_type: 2,
+                    text: {
+                        style: { align: 1, folded: false },
+                        elements: this.parseInlineStyles(cellText || ' ')
+                    }
+                });
+
+                // 单元格块（容器），children 只放子块 id 字符串
+                out.push({
+                    block_id: cellId,
+                    block_type: 32,
+                    table_cell: {},
+                    children: [textId]
+                });
+                cellIds.push(cellId);
+            }
+        }
+
+        // 表格块
+        out.push({
+            block_id: tableId,
+            block_type: 31,
+            table: {
+                property: {
+                    row_size: allRows.length,
+                    column_size: colCount,
+                    column_width: Array(colCount).fill(120),
+                    header_row: headerRow ? true : false
+                }
+            },
+            children: cellIds
+        });
+
+        return out;
+    }
+
+    /**
+     * 给一个扁平块数组里的所有“顶层块”（即非容器内嵌的）补上临时 block_id。
+     * 表格块会自己生成 id，其他块要在 replaceDocumentContent 里统一处理。
+     */
+    private ensureBlockIds(blocks: any[]): string[] {
+        const topLevelIds: string[] = [];
+        for (const b of blocks) {
+            if (!b.block_id) {
+                b.block_id = this.nextTempBlockId('b');
+            }
+        }
+        return topLevelIds;
+    }
+
+    /**
+     * 计算表格行中实际的列数（按未转义的 | 分割）
+     */
+    private countTableColumns(row: string): number {
+        return this.splitTableRow(row, 0).length;
+    }
+
+    /**
+     * 将一行 | a | b | c | 分割为单元格文本数组
+     */
+    private splitTableRow(row: string, colCount: number): string[] {
+        // 去掉首尾 |
+        let content = row.trim();
+        if (content.startsWith('|')) { content = content.substring(1); }
+        if (content.endsWith('|')) { content = content.substring(0, content.length - 1); }
+
+        const cells: string[] = [];
+        let current = '';
+        for (let i = 0; i < content.length; i++) {
+            const ch = content[i];
+            if (ch === '|') {
+                // 普通的分隔符
+                cells.push(current.trim());
+                current = '';
+            } else if (ch === '\\' && i + 1 < content.length && content[i + 1] === '|') {
+                // 转义的管道符 \|
+                current += '|';
+                i++;
+            } else {
+                current += ch;
+            }
+        }
+        cells.push(current.trim());
+
+        // 填充对齐列数
+        while (cells.length < colCount) { cells.push(''); }
+        return cells;
+    }
+
+    /**
+     * 创建一个飞书表格单元格（block_type=32）及其内部文本块。
+     * 注意：批量创建 API 要求 children 包含完整 block 对象，不能只传 block_id。
+     */
+    private makeTableCell(cellText: string, _isHeader: boolean): any {
+        const cellId = `cell_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+        // 单元格内部文本块 —— 解析行内样式
+        const elements = this.parseInlineStyles(cellText || ' ');
+        const textBlock: any = {
+            block_type: 2,
+            text: {
+                style: { align: 1, folded: false },
+                elements
+            }
+        };
+
+        return {
+            block_id: cellId,
+            block_type: 32,
+            table_cell: {
+                style: { align: 1, folded: false }
+            },
+            children: [textBlock]
+        };
+    }
+
+    /**
+     * 表格解析失败时，将所有行作为普通文本块降级输出
+     */
+    private fallbackTableAsText(rows: string[]): any[] {
+        return rows.map(row => ({
+            block_type: 2,
+            text: {
+                style: { align: 1, folded: false },
+                elements: this.parseInlineStyles(row)
+            }
+        }));
+    }
+
+    /**
      * 使用飞书官方 API 将 Markdown 转换为文档块
      */
     async convertMarkdownToBlocks(markdown: string): Promise<any> {
@@ -1070,19 +1314,28 @@ export class FeishuApi {
         console.log('[replaceDocumentContent] 需要删除的子块数量:', children.length);
 
         if (children.length > 0) {
-            await axios.delete(
-                `${this.apiBaseUrl}/open-apis/docx/v1/documents/${documentId}/blocks/${rootBlock.block_id}/children/batch_delete`,
-                {
-                    data: {
-                        start_index: 0,
-                        end_index: children.length
-                    },
-                    headers: {
-                        'Authorization': `Bearer ${this.accessToken}`,
-                        'Content-Type': 'application/json'
+            // 飞书 batch_delete 单次最多删除 50 个，从尾部往前批量删除避免索引漂移
+            const DELETE_BATCH_SIZE = 50;
+            let remaining = children.length;
+            while (remaining > 0) {
+                const batchSize = Math.min(DELETE_BATCH_SIZE, remaining);
+                const startIndex = remaining - batchSize;
+                const endIndex = remaining;
+                await axios.delete(
+                    `${this.apiBaseUrl}/open-apis/docx/v1/documents/${documentId}/blocks/${rootBlock.block_id}/children/batch_delete`,
+                    {
+                        data: {
+                            start_index: startIndex,
+                            end_index: endIndex
+                        },
+                        headers: {
+                            'Authorization': `Bearer ${this.accessToken}`,
+                            'Content-Type': 'application/json'
+                        }
                     }
-                }
-            );
+                );
+                remaining -= batchSize;
+            }
             console.log('[replaceDocumentContent] 子块删除成功');
         }
 
@@ -1111,34 +1364,124 @@ export class FeishuApi {
 
             console.log('[replaceDocumentContent] 准备插入的块数量:', convertedBlocks.length);
 
+            // 分离顶层块（无 children 引用的非容器块）和容器块（表格等扁平展开的）
+            // 表格块自带 block_id，单元格也带 block_id；普通块没有 block_id
+            // 顶层块 = 没有被其他块的 children 字段引用的 block
+            const referencedIds = new Set<string>();
+            for (const b of convertedBlocks) {
+                if (Array.isArray(b.children)) {
+                    for (const childId of b.children) {
+                        if (typeof childId === 'string') {
+                            referencedIds.add(childId);
+                        }
+                    }
+                }
+            }
+
+            // 给所有没有 block_id 的非容器块也补上 id（descendant API 要求）
+            for (const b of convertedBlocks) {
+                if (!b.block_id) {
+                    b.block_id = this.nextTempBlockId('b');
+                }
+            }
+
+            // 顶层块顺序：按照 convertedBlocks 的原顺序，挑出未被引用的（顶层块）
+            const topLevelIds: string[] = [];
+            for (const b of convertedBlocks) {
+                if (!referencedIds.has(b.block_id)) {
+                    topLevelIds.push(b.block_id);
+                }
+            }
+
+            console.log('[replaceDocumentContent] 顶层块数量:', topLevelIds.length, '总块数:', convertedBlocks.length);
+
             // 打印前几个块的结构，用于调试
             if (convertedBlocks.length > 0) {
                 console.log('[replaceDocumentContent] 前3个块的结构:', JSON.stringify(convertedBlocks.slice(0, 3), null, 2));
             }
 
-            // 插入转换后的块
-            const insertResponse = await axios.post(
-                `${this.apiBaseUrl}/open-apis/docx/v1/documents/${documentId}/blocks/${rootBlock.block_id}/children`,
-                {
-                    children: convertedBlocks
-                },
-                {
-                    headers: {
-                        'Authorization': `Bearer ${this.accessToken}`,
-                        'Content-Type': 'application/json'
+            // 使用 /descendant 接口：支持扁平 block 列表 + 父子关系（children: [block_id]）
+            // 单次最多 50 个，需要分批；但分批时父子关系必须在同一批内，所以按顶层块分组
+            const INSERT_BATCH_SIZE = 50;
+            const blockMap = new Map<string, any>();
+            for (const b of convertedBlocks) {
+                blockMap.set(b.block_id, b);
+            }
+
+            // 按顶层块及其后代分组打包，控制每批 ≤ 50
+            let currentBatch: any[] = [];
+            let currentBatchIds: string[] = [];
+            let batchIndex = 0;
+            let totalInsertedTop = 0;
+
+            const collectDescendants = (rootId: string): any[] => {
+                const result: any[] = [];
+                const queue = [rootId];
+                const seen = new Set<string>();
+                while (queue.length > 0) {
+                    const id = queue.shift()!;
+                    if (seen.has(id)) { continue; }
+                    seen.add(id);
+                    const block = blockMap.get(id);
+                    if (!block) { continue; }
+                    result.push(block);
+                    if (Array.isArray(block.children)) {
+                        for (const cid of block.children) {
+                            if (typeof cid === 'string') { queue.push(cid); }
+                        }
                     }
                 }
-            );
+                return result;
+            };
 
-            console.log('[replaceDocumentContent] 插入响应状态:', insertResponse.status);
-            console.log('[replaceDocumentContent] 插入响应 code:', insertResponse.data.code);
+            const flushBatch = async () => {
+                if (currentBatch.length === 0) { return; }
+                const insertResponse = await axios.post(
+                    `${this.apiBaseUrl}/open-apis/docx/v1/documents/${documentId}/blocks/${rootBlock.block_id}/descendant`,
+                    {
+                        children_id: currentBatchIds,
+                        index: totalInsertedTop,
+                        descendants: currentBatch
+                    },
+                    {
+                        headers: {
+                            'Authorization': `Bearer ${this.accessToken}`,
+                            'Content-Type': 'application/json'
+                        }
+                    }
+                );
 
-            if (insertResponse.data.code !== 0) {
-                console.error('[replaceDocumentContent] API 返回错误代码:', insertResponse.data.code);
-                console.error('[replaceDocumentContent] 错误消息:', insertResponse.data.msg);
-                console.error('[replaceDocumentContent] 完整响应:', JSON.stringify(insertResponse.data, null, 2));
-                throw new Error(`飞书 API 错误 ${insertResponse.data.code}: ${insertResponse.data.msg}`);
+                console.log(`[replaceDocumentContent] 第 ${batchIndex + 1} 批插入状态:`, insertResponse.status, 'code:', insertResponse.data.code, '块数:', currentBatch.length, '顶层:', currentBatchIds.length);
+
+                if (insertResponse.data.code !== 0) {
+                    console.error('[replaceDocumentContent] API 返回错误代码:', insertResponse.data.code);
+                    console.error('[replaceDocumentContent] 错误消息:', insertResponse.data.msg);
+                    console.error('[replaceDocumentContent] 完整响应:', JSON.stringify(insertResponse.data, null, 2));
+                    console.error('[replaceDocumentContent] 请求体:', JSON.stringify({
+                        children_id: currentBatchIds,
+                        index: totalInsertedTop,
+                        descendants: currentBatch
+                    }, null, 2));
+                    throw new Error(`飞书 API 错误 ${insertResponse.data.code}: ${insertResponse.data.msg}`);
+                }
+
+                totalInsertedTop += currentBatchIds.length;
+                batchIndex++;
+                currentBatch = [];
+                currentBatchIds = [];
+            };
+
+            for (const topId of topLevelIds) {
+                const group = collectDescendants(topId);
+                // 如果当前批加上这组会超限，先 flush
+                if (currentBatch.length > 0 && currentBatch.length + group.length > INSERT_BATCH_SIZE) {
+                    await flushBatch();
+                }
+                // 单组本身超限的情况（极大表格），仍然单独提交（API 上限通常更宽松）
+                currentBatch.push(...group);
+                currentBatchIds.push(topId);
             }
+            await flushBatch();
 
             console.log('[replaceDocumentContent] 文档块插入成功');
         } catch (error: any) {
